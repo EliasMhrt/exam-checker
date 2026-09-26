@@ -67,21 +67,50 @@ class LetterModel {
 
   final double blankInkFraction;
 
-  bool get isUsable => centroids.isNotEmpty && labels.length == centroids.length;
-
   int get dimension => centroids.isEmpty ? 0 : centroids.first.length;
 
-  /// Members of each cluster, for showing the teacher one example to label.
+  /// Members of each cluster, nearest to the centroid first, for showing the
+  /// teacher one example to label.
+  ///
+  /// Assignment uses this model's own centroids rather than clustering the
+  /// samples again. A fresh clustering produces a different set of clusters
+  /// whose ids mean nothing here, so the teacher could name cluster 2 while
+  /// every cell the app later reads as cluster 2 is really a different letter.
   Map<int, List<LetterFeatures>> exemplarsByCluster(
       List<LetterFeatures> samples) {
-    final clusters = kMeans(samples.map((s) => s.vector).toList(),
-        k: centroids.length, seed: 7);
-    final out = <int, List<LetterFeatures>>{};
-    for (var i = 0; i < samples.length; i++) {
-      out.putIfAbsent(clusters.assignments[i], () => []).add(samples[i]);
+    final out = <int, List<(LetterFeatures, double)>>{};
+    for (final s in samples) {
+      if (centroids.isEmpty || s.dimension != dimension) continue;
+      final nearest = _nearestCentroid(centroids, s.vector);
+      out.putIfAbsent(nearest.index, () => []).add((s, nearest.distance));
     }
-    return out;
+    final sorted = <int, List<LetterFeatures>>{};
+    out.forEach((cluster, members) {
+      // Closest to the centroid first: the most typical member of the cluster
+      // and the easiest one for the teacher to name.
+      members.sort((a, b) => a.$2.compareTo(b.$2));
+      sorted[cluster] = [for (final m in members) m.$1];
+    });
+    return sorted;
   }
+
+  /// Whether every cluster the given samples actually land in has a label.
+  ///
+  /// A centroid that no sample is nearest to is a phantom left by a split
+  /// cluster. It cannot be labelled, because there is nothing to show the
+  /// teacher, so it must not block grading the cells that were read correctly.
+  bool isUsableFor(List<LetterFeatures> samples) {
+    if (centroids.isEmpty) return false;
+    final populated = exemplarsByCluster(samples).keys.toSet();
+    return populated.isNotEmpty && populated.every(labels.containsKey);
+  }
+
+  /// Cluster ids with no label, restricted to those the samples use.
+  Set<int> unlabelledClusters(List<LetterFeatures> samples) => exemplarsByCluster(
+          samples)
+      .keys
+      .toSet()
+      .difference(labels.keys.toSet());
 
   LetterGuess classify(LetterFeatures features) {
     if (centroids.isEmpty || features.dimension != dimension) {
@@ -227,6 +256,21 @@ LetterClusters kMeans(
     distances: distances,
     inertia: inertia,
   );
+}
+
+/// Index of and squared distance to the closest centroid.
+({int index, double distance}) _nearestCentroid(
+    List<Float32List> centroids, Float32List vector) {
+  var best = 0;
+  var bestDist = double.infinity;
+  for (var c = 0; c < centroids.length; c++) {
+    final d = _squaredDistance(vector, centroids[c]);
+    if (d < bestDist) {
+      bestDist = d;
+      best = c;
+    }
+  }
+  return (index: best, distance: bestDist);
 }
 
 double _squaredDistance(Float32List a, Float32List b) {

@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import '../models/answer_key.dart';
 import 'grid_detector.dart';
 
 /// How many writable cells make up one question.
@@ -32,17 +33,22 @@ class ExamCalibration {
   /// Stable identifier for the exam this calibration belongs to.
   final String examId;
 
-  /// The correct answer letters, in question order.
-  final List<String> answerKey;
+  /// The correct answers, with the teacher's own question numbering.
+  ///
+  /// Held as an [AnswerKey] rather than a flat list so a gap survives: question
+  /// 4 with no key entry stays missing instead of sliding onto question 3.
+  final AnswerKey answerKey;
 
   /// Writable cells in reading order.
   final List<CellRect> cells;
 
   final CellGrouping grouping;
 
-  /// Cells per question when [grouping] is [CellGrouping.options].
+  /// How many cells make up one question, and how many distinct letters the
+  /// sheet can therefore contain.
   ///
-  /// Explicit rather than inferred from the answer key: a key that happens to
+  /// This is the cluster count for the unsupervised reader, and it must be
+  /// explicit rather than inferred from the answer key: a key that happens to
   /// contain no "D" must not silently shrink the option row, and the teacher
   /// knows this number from the paper even when the key is incomplete.
   final int optionCount;
@@ -54,7 +60,12 @@ class ExamCalibration {
   /// Cluster label assignments learned from the teacher, keyed by cluster id.
   final Map<int, String> labelPrototypes;
 
-  int get questionCount => answerKey.length;
+  /// Highest question number the key mentions, so gaps still occupy a slot.
+  int get questionCount => answerKey.maxNumber;
+
+  /// Questions with a key entry. Smaller than [questionCount] when the key has
+  /// gaps.
+  int get gradableQuestionCount => answerKey.count;
 
   int get cellsPerQuestion =>
       grouping == CellGrouping.single ? 1 : math.max(1, optionCount);
@@ -78,21 +89,40 @@ class ExamCalibration {
     return group.isEmpty ? null : group.first;
   }
 
-  /// Human-readable problem description for a calibration that cannot be used.
+  /// Human-readable problem description for a calibration that cannot be read
+  /// at all.
+  ///
+  /// Gaps in the key are not a structural problem and are not listed here: a
+  /// missing answer makes its own question ungradable, and the rest of the sheet
+  /// can still be marked. See [keyProblems], which the UI must show.
   String? validate() {
     if (cells.isEmpty) return 'No answer cells were marked.';
-    if (answerKey.isEmpty) return 'No answer key was provided.';
+    if (answerKey.entries.isEmpty) return 'No answer key was provided.';
     if (cells.length != questionCount * cellsPerQuestion) {
-      return 'Marked ${cells.length} cells but the answer key has '
-          '$questionCount questions at $cellsPerQuestion cell(s) each '
+      return 'Marked ${cells.length} cells but the answer key reaches question '
+          '$questionCount at $cellsPerQuestion cell(s) each '
           '(expected ${questionCount * cellsPerQuestion}).';
     }
     return null;
   }
 
+  /// Reasons the marks will be incomplete, for display before grading.
+  List<String> get keyProblems {
+    final out = <String>[];
+    if (!answerKey.isContiguous) {
+      final gaps = answerKey.missingNumbers;
+      out.add(
+        'The answer key has no entry for question'
+        '${gaps.length == 1 ? '' : 's'} ${gaps.join(', ')}. '
+        'Those will be left out of the total rather than counted wrong.',
+      );
+    }
+    return out;
+  }
+
   ExamCalibration copyWith({
     String? examId,
-    List<String>? answerKey,
+    AnswerKey? answerKey,
     List<CellRect>? cells,
     CellGrouping? grouping,
     int? optionCount,

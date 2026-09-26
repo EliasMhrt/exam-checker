@@ -2,6 +2,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:myapp/models/answer_key.dart';
 import 'package:myapp/omr/calibration.dart';
 import 'package:myapp/omr/grid_detector.dart';
 import 'package:myapp/omr/gray_image.dart';
@@ -140,6 +141,12 @@ double _distance(LetterFeatures a, LetterFeatures b) {
   return math.sqrt(sum);
 }
 
+/// A well-formed key from plain letters, numbered from 1.
+AnswerKey keyOf(List<String> letters) => AnswerKey(entries: [
+      for (var i = 0; i < letters.length; i++)
+        AnswerKeyEntry(number: i + 1, correctAnswer: letters[i]),
+    ]);
+
 void main() {
   group('Hole counting', () {
     Float32List plane(List<String> rows) {
@@ -242,7 +249,34 @@ void main() {
   });
 
   group('Unsupervised letter model', () {
+    /// A synthetic descriptor with a real, self-consistent dimension.
+    ///
+    /// LetterFeatures.dimension is grid.length + letterFeatureCount, so a
+    /// fixture that pairs a short grid with a short vector is malformed. Every
+    /// model call rejects it on the dimension check, which makes such a test
+    /// pass while asserting nothing. This keeps the two in step.
+    LetterFeatures synthetic(double marker) {
+      final gridLength = letterGridSize * letterGridSize;
+      final vector = Float32List(gridLength + letterFeatureCount);
+      vector[0] = marker;
+      return LetterFeatures(
+        vector: vector,
+        grid: Float32List(gridLength),
+        inkFraction: 0.1,
+        holes: 0,
+        aspect: 1,
+        centroidY: 0.5,
+        topMass: 0.3,
+        midMass: 0.3,
+        bottomMass: 0.4,
+      );
+    }
+
+    List<Float32List> markers(List<double> values) =>
+        [for (final v in values) synthetic(v).vector];
+
     test('recovers the four letters without being told what they are', () {
+
       const letters = ['A', 'B', 'C', 'D'];
       final samples = <LetterFeatures>[];
       final truth = <String>[];
@@ -280,7 +314,7 @@ void main() {
 
       final model = LetterModel(
           centroids: clusters.centroids, labels: labels);
-      expect(model.isUsable, isTrue);
+      expect(model.isUsableFor(samples), isTrue);
 
       for (var i = 0; i < samples.length; i++) {
         final guess = model.classify(samples[i]);
@@ -291,27 +325,109 @@ void main() {
     });
 
     test('an unlabelled cluster is always sent to the teacher', () {
-      final clusters = kMeans([
-        Float32List.fromList(List<double>.filled(4, 0.0)),
-        Float32List.fromList(List<double>.filled(4, 1.0)),
-        Float32List.fromList(List<double>.filled(4, 0.2)),
-        Float32List.fromList(List<double>.filled(4, 0.9)),
-      ], k: 2);
+      final clusters = kMeans(markers([0.0, 1.0, 0.2, 0.9]), k: 2);
       final model = LetterModel(centroids: clusters.centroids, labels: const {});
-      final guess = model.classify(LetterFeatures(
-        vector: Float32List.fromList(List<double>.filled(4, 0.0)),
-        grid: Float32List(1),
-        inkFraction: 0.1,
-        holes: 0,
-        aspect: 1,
-        centroidY: 0.5,
-        topMass: 0.3,
-        midMass: 0.3,
-        bottomMass: 0.4,
-      ));
+      final sample = synthetic(0.0);
+      final guess = model.classify(sample);
+      // The model has real centroids, so the cluster is identified; it is the
+      // missing label that must block grading.
+      expect(guess.cluster, isNot(-1));
       expect(guess.label, isNull);
       expect(guess.needsReview, isTrue);
-      expect(model.isUsable, isFalse);
+      expect(model.isUsableFor([sample]), isFalse);
+      expect(model.unlabelledClusters([sample]), isNotEmpty);
+    });
+
+    test('exemplars come from the model centroids, not a fresh clustering', () {
+      // Regression: exemplarsByCluster used to re-run k-means with its own
+      // seed. Those cluster ids mean nothing to this model, so the teacher
+      // could name cluster 2 while every cell the app reads as cluster 2 was
+      // really a different letter.
+      final clusters = kMeans(markers([0.0, 1.0, 0.1, 0.9]), k: 2, seed: 1);
+      final samples = [synthetic(0.0), synthetic(1.0)];
+      final model =
+          LetterModel(centroids: clusters.centroids, labels: const {});
+
+      final exemplars = model.exemplarsByCluster(samples);
+      expect(exemplars, isNotEmpty);
+      // The cluster each sample lands in must equal what classify() reports,
+      // because that is the id the teacher labels.
+      for (final s in samples) {
+        final cluster = model.classify(s).cluster;
+        expect(exemplars[cluster], isNotNull,
+            reason: 'exemplar map has no entry for cluster $cluster');
+        expect(exemplars[cluster]!.first.vector, s.vector);
+      }
+    });
+
+    test('an empty centroid cluster does not block grading', () {
+      // Three centroids, but the samples only ever land on two of them. The
+      // phantom cannot be labelled because there is nothing to show, so it
+      // must not make the whole model unusable.
+      final samples = [synthetic(0.0), synthetic(0.1), synthetic(10.0), synthetic(10.1)];
+      final centroids = [
+        synthetic(0.0).vector,
+        synthetic(10.0).vector,
+        synthetic(99.0).vector,
+      ];
+      final model = LetterModel(
+          centroids: centroids, labels: const {0: 'A', 1: 'B'});
+      expect(model.isUsableFor(samples), isTrue);
+      expect(model.unlabelledClusters(samples), isEmpty);
+    });
+  });
+
+  group('Answer key parsing', () {
+    test('reads a plain letter sequence', () {
+      final parse = AnswerKeyParser.parse('A C B D A');
+      expect(parse.ok, isTrue);
+      expect(parse.key!.count, 5);
+      expect(parse.key!.entryFor(3)!.correctAnswer, 'B');
+    });
+
+    test('reads numbered answers typed on one line', () {
+      // Regression: the parser anchored its number regex to the start of a
+      // line, so a single-line key matched only "1. A" and silently threw
+      // away every later answer.
+      final parse = AnswerKeyParser.parse('1. A 2. B 3. C 4. D');
+      expect(parse.ok, isTrue);
+      expect(parse.key!.count, 4);
+      expect(parse.key!.entryFor(2)!.correctAnswer, 'B');
+      expect(parse.key!.entryFor(4)!.correctAnswer, 'D');
+    });
+
+    test('keeps original numbers when the key has a gap', () {
+      // Regression: non-sequential input was renumbered 1,2,3, which reported
+      // question 4's answer against question 3. That is a wrong mark shown as
+      // a right one, so the gap has to survive and be reported.
+      final parse = AnswerKeyParser.parse('1. A\n2. B\n4. D');
+      final key = parse.key!;
+      expect(key.entryFor(3), isNull);
+      expect(key.entryFor(4)!.correctAnswer, 'D');
+      expect(key.maxNumber, 4);
+      expect(key.isContiguous, isFalse);
+      expect(key.missingNumbers, [3]);
+      expect(parse.ok, isFalse);
+      expect(parse.problems.join(' '), contains('3'));
+    });
+
+    test('does not read prose as a numbered answer', () {
+      // "5 questions" must not become question 5 answered "q".
+      final parse = AnswerKeyParser.parse('5 questions, answers A B C D');
+      expect(parse.problems.where((p) => p.contains('starts at')), isEmpty);
+      expect(parse.key!.maxNumber, 4);
+    });
+
+    test('reports a duplicated question number', () {
+      final parse = AnswerKeyParser.parse('1. A\n1. B\n2. C');
+      expect(parse.problems.join(' '), contains('more than one'));
+      expect(parse.key!.count, 2);
+    });
+
+    test('reports that nothing was found', () {
+      final parse = AnswerKeyParser.parse('   ');
+      expect(parse.key, isNull);
+      expect(parse.ok, isFalse);
     });
   });
 
@@ -376,7 +492,7 @@ void main() {
       );
       final calibration = ExamCalibration(
         examId: 'e1',
-        answerKey: const ['A', 'B', 'C', 'D'],
+        answerKey: keyOf(['A', 'B', 'C', 'D']),
         cells: cells,
         grouping: CellGrouping.single,
       );
@@ -391,7 +507,7 @@ void main() {
     test('rejects a calibration whose cell count contradicts the key', () {
       final calibration = ExamCalibration(
         examId: 'e1',
-        answerKey: const ['A', 'B', 'C', 'D', 'E'],
+        answerKey: keyOf(['A', 'B', 'C', 'D', 'E']),
         cells: deriveLattice(
           firstRowRect: const CellRect(0.1, 0.3, 0.9, 0.34),
           cellRect: const CellRect(0.1, 0.3, 0.14, 0.34),
@@ -413,7 +529,7 @@ void main() {
       );
       final calibration = ExamCalibration(
         examId: 'e1',
-        answerKey: const ['A', 'B', 'C'],
+        answerKey: keyOf(['A', 'B', 'C']),
         cells: cells,
         grouping: CellGrouping.options,
         optionCount: 4,
@@ -435,7 +551,7 @@ void main() {
       );
       final calibration = ExamCalibration(
         examId: 'e1',
-        answerKey: const ['A', 'C'],
+        answerKey: keyOf(['A', 'C']),
         cells: cells,
         grouping: CellGrouping.options,
       );

@@ -23,7 +23,12 @@ class LetterFeatures {
     required this.topMass,
     required this.midMass,
     required this.bottomMass,
-  });
+  }) : assert(
+          vector.length == grid.length + letterFeatureCount,
+          'vector must be the grid followed by the structural features; a '
+          'mismatch makes dimension disagree with vector.length, and every '
+          'model call then rejects the descriptor for looking malformed',
+        );
 
   /// Full feature vector: the density grid followed by weighted structure.
   final Float32List vector;

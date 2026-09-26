@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models/answer_key.dart';
-import 'scan_screen.dart';
+import 'calibrate_screen.dart';
 
 class AnswerKeyScreen extends StatefulWidget {
   const AnswerKeyScreen({super.key});
@@ -12,20 +12,24 @@ class AnswerKeyScreen extends StatefulWidget {
 
 class _AnswerKeyScreenState extends State<AnswerKeyScreen> {
   final TextEditingController _controller = TextEditingController();
-  AnswerKey? _parsed;
+  AnswerKeyParse? _parse;
 
   void _reparse(String text) {
-    final key = AnswerKey.fromText(text);
-    setState(() {
-      _parsed = key.entries.isNotEmpty ? key : null;
-    });
+    setState(() => _parse = text.trim().isEmpty ? null : AnswerKeyParser.parse(text));
   }
 
-  void _startScanning() {
-    final key = _parsed;
-    if (key == null) return;
+  /// A key with gaps can still be corrected later, so it opens calibration.
+  /// What it must never do is open grading and quietly count a missing answer
+  /// as a wrong one, which the review screen prevents.
+  bool get _canContinue => (_parse?.key?.entries.isNotEmpty ?? false);
+
+  void _continue() {
+    final parse = _parse;
+    if (parse?.key == null) return;
     Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => ScanScreen(answerKey: key)),
+      MaterialPageRoute(
+        builder: (_) => CalibrateScreen(answerKey: parse!.key!),
+      ),
     );
   }
 
@@ -38,6 +42,7 @@ class _AnswerKeyScreenState extends State<AnswerKeyScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final parse = _parse;
     return Scaffold(
       appBar: AppBar(title: const Text('Answer key')),
       body: Padding(
@@ -65,18 +70,18 @@ class _AnswerKeyScreenState extends State<AnswerKeyScreen> {
               ),
             ),
             const SizedBox(height: 12),
-            if (_parsed != null)
-              _ParsedPreview(answerKey: _parsed!)
-            else
+            if (parse == null)
               Text(
-                'Nothing parsed yet.',
+                'Nothing entered yet.',
                 style: theme.textTheme.bodySmall
                     ?.copyWith(color: theme.colorScheme.outline),
-              ),
+              )
+            else
+              _ParseReport(parse: parse),
             const SizedBox(height: 16),
             FilledButton(
-              onPressed: _parsed == null ? null : _startScanning,
-              child: const Text('Open smart camera'),
+              onPressed: _canContinue ? _continue : null,
+              child: const Text('Mark the answer grid'),
             ),
           ],
         ),
@@ -85,30 +90,90 @@ class _AnswerKeyScreenState extends State<AnswerKeyScreen> {
   }
 }
 
-class _ParsedPreview extends StatelessWidget {
-  const _ParsedPreview({required this.answerKey});
+/// Shows what was read, and anything the teacher needs to fix first.
+///
+/// The parsed letters are always shown even when there is a problem. The
+/// teacher has to be able to see what the app thinks it read and correct it,
+/// rather than being told only that something is wrong.
+class _ParseReport extends StatelessWidget {
+  const _ParseReport({required this.parse});
 
-  final AnswerKey answerKey;
+  final AnswerKeyParse parse;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final chip = answerKey.entries
-        .map((e) => '${e.number}. ${e.correctAnswer}')
-        .join('  ');
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: theme.colorScheme.primaryContainer,
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Text(
-        '${answerKey.count} questions:  $chip',
-        style: theme.textTheme.bodyMedium?.copyWith(
-          color: theme.colorScheme.onPrimaryContainer,
-          fontWeight: FontWeight.w600,
-        ),
-      ),
+    final key = parse.key;
+    final problems = parse.problems;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (key != null && key.entries.isNotEmpty)
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.primaryContainer,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '${key.count} of question ${key.maxNumber} answered',
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: theme.colorScheme.onPrimaryContainer,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  key.entries
+                      .map((e) => '${e.number}. ${e.correctAnswer}')
+                      .join('   '),
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onPrimaryContainer,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        if (problems.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.errorContainer,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                for (final problem in problems)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 2),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(Icons.warning_amber_rounded,
+                            size: 18, color: theme.colorScheme.onErrorContainer),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            problem,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.onErrorContainer,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ],
     );
   }
 }

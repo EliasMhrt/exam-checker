@@ -35,8 +35,10 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
   camera: ^0.11.1
-  path_provider: ^2.1.5
   image: ^4.10.1
+  # Android needs the camera permission granted at runtime before any capture.
+  # The camera plugin declares it in the manifest but does not ask for it.
+  permission_handler: ^11.3.1
 
 dev_dependencies:
   flutter_test:

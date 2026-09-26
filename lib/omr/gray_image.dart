@@ -231,6 +231,37 @@ class GrayImage {
 
   GrayImage clone() => GrayImage(width, height, Float32List.fromList(data));
 
+  /// A sub-rectangle, clamped to the image and at least 1x1.
+  ///
+  /// Pixels outside the image come back as [fill] rather than being dropped, so
+  /// a calibration cell that hangs off the edge of a slightly-off photo still
+  /// yields a correctly sized crop and reads as blank instead of shifting every
+  /// later cell.
+  GrayImage crop(int left, int top, int cropWidth, int cropHeight,
+      {double fill = 255}) {
+    final x0 = left.clamp(0, width);
+    final y0 = top.clamp(0, height);
+    final x1 = (left + cropWidth).clamp(0, width);
+    final y1 = (top + cropHeight).clamp(0, height);
+    final w = (x1 - x0) < 1 ? 1 : x1 - x0;
+    final h = (y1 - y0) < 1 ? 1 : y1 - y0;
+
+    final out = Float32List(w * h);
+    for (var i = 0; i < out.length; i++) {
+      out[i] = fill;
+    }
+    for (var y = 0; y < h; y++) {
+      final sy = y0 + y;
+      if (sy < 0 || sy >= height) continue;
+      for (var x = 0; x < w; x++) {
+        final sx = x0 + x;
+        if (sx < 0 || sx >= width) continue;
+        out[y * w + x] = data[sy * width + sx];
+      }
+    }
+    return GrayImage(w, h, out);
+  }
+
   /// Resamples this image through [toSource], a mapping from destination pixel
   /// coordinates back to this image's coordinates.
   ///
